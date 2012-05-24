@@ -481,7 +481,7 @@ void freeMemory() {
 AudioHardware::AudioHardware() :
     mInit(false), mMicMute(true), mBluetoothNrec(true), mBluetoothId(0),
     mHACSetting(false), mBluetoothIdTx(0), mBluetoothIdRx(0),
-    mOutput(0), mCurSndDevice(INVALID_DEVICE), mVoiceVolume(VOICE_VOLUME_MAX),
+    mOutput(0), mCurSndDevice(INVALID_DEVICE), mVoiceVolume(1),
     mTtyMode(TTY_OFF), mDualMicEnabled(false), mRecordState(false),
     mEffectEnabled(false)
 {
@@ -1086,6 +1086,8 @@ status_t AudioHardware::setVoiceVolume(float v) {
         v = 1.0;
     }
 
+    mVoiceVolume = v;
+
     int vol = lrint(v * 100.0);
     if (mCurSndDevice == SND_DEVICE_HAC) {
         LOGI("HAC enable: Setting in-call volume to maximum.");
@@ -1103,7 +1105,6 @@ status_t AudioHardware::setVoiceVolume(float v) {
         }
     }
 
-    mVoiceVolume = vol;
     LOGV("msm_set_voice_rx_vol(%d) succeeded", vol);
 
     if (mMode == AudioSystem::MODE_IN_CALL &&
@@ -1453,13 +1454,9 @@ static status_t do_route_audio_rpc(uint32_t device, bool ear_mute, bool mic_mute
     return NO_ERROR;
 }
 
-status_t AudioHardware::doAudioRouteOrMute(uint32_t device) {
+status_t AudioHardware::doAudioRouteOrMuteHTC(uint32_t device) {
     uint32_t rx_acdb_id = 0;
     uint32_t tx_acdb_id = 0;
-
-    if (!isHTCPhone)
-        return do_route_audio_rpc(device, mMode != AudioSystem::MODE_IN_CALL,
-                                  mMicMute, rx_acdb_id, tx_acdb_id);
 
     if (device == SND_DEVICE_BT) {
         if (!mBluetoothNrec)
@@ -1511,11 +1508,29 @@ status_t AudioHardware::doAudioRouteOrMute(uint32_t device) {
         }
     }
 
-    LOGV("doAudioRouteOrMute: rx acdb %d, tx acdb %d", rx_acdb_id, tx_acdb_id);
-    LOGV("doAudioRouteOrMute() device %d, mMode %d, mMicMute %d", device, mMode, mMicMute);
+    LOGV("doAudioRouteOrMuteHTC() rx acdb %d, tx acdb %d",
+            rx_acdb_id, tx_acdb_id);
+    LOGV("doAudioRouteOrMuteHTC() device %d, mMode %d, mMicMute %d",
+            device, mMode, mMicMute);
 
-    return do_route_audio_rpc(device, mMode != AudioSystem::MODE_IN_CALL,
-                              mMicMute, rx_acdb_id, tx_acdb_id);
+    return do_route_audio_rpc(device, !isInCall(), mMicMute,
+                             rx_acdb_id, tx_acdb_id);
+}
+
+status_t AudioHardware::doAudioRouteOrMute(uint32_t device) {
+    status_t ret = NO_ERROR;
+
+    if (!isHTCPhone) {
+        LOGV("doAudioRouteOrMute() device %d, mMode %d, mMicMute %d",
+                device, mMode, mMicMute);
+        ret = do_route_audio_rpc(device, !isInCall(), mMicMute, 0, 0);
+    } else
+        ret = doAudioRouteOrMuteHTC(device);
+
+    if (isInCall())
+       setVoiceVolume(mVoiceVolume);
+
+    return ret;
 }
 
 status_t AudioHardware::get_mMode(void) {
@@ -1544,20 +1559,21 @@ uint32_t AudioHardware::getACDB(int mode, uint32_t device) {
 
     uint32_t acdb_id = 0;
     int batt_temp = 0;
+    int vol = lrint(mVoiceVolume * 100.0);
 
     if (mMode == AudioSystem::MODE_IN_CALL &&
         device <= SND_DEVICE_NO_MIC_HEADSET) {
         if (mode == MOD_RX) {
             switch (device) {
                 case SND_DEVICE_HANDSET:
-                    acdb_id = mVoiceVolume / 20 + 201;
+                    acdb_id = vol / 20 + 201;
                     break;
                 case SND_DEVICE_HEADSET:
                 case SND_DEVICE_NO_MIC_HEADSET:
-                    acdb_id = mVoiceVolume / 20 + 401;
+                    acdb_id = vol / 20 + 401;
                     break;
                 case SND_DEVICE_SPEAKER:
-                    acdb_id = mVoiceVolume / 20 + 601;
+                    acdb_id = vol / 20 + 601;
                     break;
                 default:
                     break;
@@ -1565,14 +1581,14 @@ uint32_t AudioHardware::getACDB(int mode, uint32_t device) {
         } else if (mode == MOD_TX) {
             switch (device) {
                 case SND_DEVICE_HANDSET:
-                    acdb_id = mVoiceVolume / 20 + 101;
+                    acdb_id = vol / 20 + 101;
                     break;
                 case SND_DEVICE_HEADSET:
                 case SND_DEVICE_NO_MIC_HEADSET:
-                    acdb_id = mVoiceVolume / 20 + 301;
+                    acdb_id = vol / 20 + 301;
                     break;
                 case SND_DEVICE_SPEAKER:
-                    acdb_id = mVoiceVolume / 20 + 501;
+                    acdb_id = vol / 20 + 501;
                     break;
                 default:
                     break;
@@ -2064,28 +2080,17 @@ status_t AudioHardware::doRouting(AudioStreamInMSM72xx *input) {
         }
     }
 
-
-    if (sndDevice != INVALID_DEVICE && sndDevice != mCurSndDevice) {
-        ret = doAudioRouteOrMute(sndDevice);
-        mCurSndDevice = sndDevice;
-        if (mMode == AudioSystem::MODE_IN_CALL) {
-            if (mHACSetting && hac_enable && mCurSndDevice == SND_DEVICE_HAC) {
-                LOGD("HAC enable: Setting in-call volume to maximum.");
-                if (msm_set_voice_rx_vol(VOICE_VOLUME_MAX))
-                    LOGE("msm_set_voice_rx_vol(%d) failed errno = %d", VOICE_VOLUME_MAX, errno);
-            } else {
-                if (msm_set_voice_rx_vol(mVoiceVolume))
-                    LOGE("msm_set_voice_rx_vol(%d) failed errno = %d", mVoiceVolume, errno);
-            }
-        }
-    }
-
 #ifdef HAVE_FM_RADIO
     if (outputDevices & AudioSystem::DEVICE_OUT_FM)
         enableFM(sndDevice);
     else
         disableFM();
 #endif
+
+    if (sndDevice != INVALID_DEVICE && sndDevice != mCurSndDevice) {
+        ret = doAudioRouteOrMute(sndDevice);
+        mCurSndDevice = sndDevice;
+    }
 
     return ret;
 }
