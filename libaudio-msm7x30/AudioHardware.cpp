@@ -840,7 +840,10 @@ status_t AudioHardware::setMode(int mode) {
     if (status == NO_ERROR) {
         /* make sure that doAudioRouteOrMute() is called by doRouting()
            even if the new device selected is the same as current one. */
-        clearCurDevice();
+        if (((prevMode != AudioSystem::MODE_IN_CALL) && (mMode == AudioSystem::MODE_IN_CALL)) ||
+            ((prevMode == AudioSystem::MODE_IN_CALL) && (mMode != AudioSystem::MODE_IN_CALL))) {
+            clearCurDevice();
+        }
     }
     return status;
 }
